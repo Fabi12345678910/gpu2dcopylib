@@ -69,11 +69,11 @@ class executor {
 };
 
 
-executor::target execute_copy(
+std::tuple<executor::target, std::optional<sycl::event>> execute_copy(
     executor& exec, const copy_spec& spec, int64_t queue_idx = 0, bool alternate_device = false, const executor::target last_target = executor::null_target);
 
-void execute_copy(executor& exec, const copy_plan& plan);
+std::optional<sycl::event> execute_copy(executor& exec, const copy_plan& plan);
 
-void execute_copy(executor& exec, const parallel_copy_set& set);
+std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set& set);
 
 } // namespace copylib

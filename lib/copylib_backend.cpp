@@ -1,6 +1,9 @@
 #include "copylib_backend.hpp"
 
 #include "copylib_support.hpp" // IWYU pragma: keep - this is needed for formatting output, IWYU is dumb
+#include <optional>
+#include <sycl/sycl.hpp>
+#include <tuple>
 
 #ifdef SIMSYCL_VERSION
 #include <simsycl/system.hh>
@@ -307,7 +310,7 @@ void copy_via_repeated_1D_copies(CopyFun fun, const data_layout& source_layout, 
 	}
 }
 
-executor::target execute_copy(executor& exec, const copy_spec& spec, int64_t queue_idx, bool alternate_device, const executor::target last_target) {
+std::tuple<executor::target, std::optional<sycl::event>> execute_copy(executor& exec, const copy_spec& spec, int64_t queue_idx, bool alternate_device, const executor::target last_target) {
 	constexpr bool debug = false;
 	const device_id last_device = last_target.did;
 	if(debug) utils::err_print("{}:\n  -> last_device is {}\n", spec, last_device);
@@ -321,7 +324,7 @@ executor::target execute_copy(executor& exec, const copy_spec& spec, int64_t que
 		}
 		copy_via_repeated_1D_copies(
 		    [](const std::byte* src, std::byte* tgt, int64_t length) { std::memcpy(tgt, src, length); }, spec.source_layout, spec.target_layout);
-		return {device_id::host, 0};
+		return {{device_id::host, 0}, std::nullopt};
 	}
 
 	const device_id desired_device = alternate_device ? spec.target_device : spec.source_device;
@@ -339,14 +342,17 @@ executor::target execute_copy(executor& exec, const copy_spec& spec, int64_t que
 
 	// if the source and target are contiguous, we can use a single copy operation
 	if(spec.is_contiguous()) {
-		queue.copy(spec.source_layout.base_ptr() + spec.source_layout.offset, spec.target_layout.base_ptr() + spec.target_layout.offset,
+		auto event = queue.copy(spec.source_layout.base_ptr() + spec.source_layout.offset, spec.target_layout.base_ptr() + spec.target_layout.offset,
 		    spec.source_layout.total_bytes());
-		return target;
+		return {target, event};
 	}
 
+	std::optional<sycl::event> event = std::nullopt;
 	// technically, one could use a kernel for copies involving the host on some hw/sw stacks, but we'll ignore that for now
 	if(spec.properties & copy_properties::use_kernel && spec.source_device != device_id::host && spec.target_device != device_id::host) {
-		copy_with_kernel(queue, spec, exec.get_preferred_wg_size());
+		sycl::event ev;
+		copy_with_kernel(queue, spec, exec.get_preferred_wg_size(), ev);
+		event = ev;
 	} else if(spec.properties & copy_properties::use_2D_copy) {
 #if SYCL_EXT_ONEAPI_MEMCPY2D > 0
 		const auto dst_ptr = spec.target_layout.base_ptr() + spec.target_layout.offset;
@@ -377,9 +383,9 @@ executor::target execute_copy(executor& exec, const copy_spec& spec, int64_t que
 #endif // SYCL_EXT_ONEAPI_MEMCPY2D
 	} else {
 		copy_via_repeated_1D_copies(
-		    [&](const std::byte* src, std::byte* tgt, int64_t length) { queue.copy(src, tgt, length); }, spec.source_layout, spec.target_layout);
+		    [&](const std::byte* src, std::byte* tgt, int64_t length) { event = queue.copy(src, tgt, length); }, spec.source_layout, spec.target_layout);
 	}
-	return target;
+	return {target, event};
 }
 
 class staging_fulfiller {
@@ -450,20 +456,27 @@ concept StagingFulfiller = requires(T f, copy_spec c) {
 	{ f.fulfill(c) };
 };
 
-void execute_plan_impl(executor& exec, const copy_plan& plan, StagingFulfiller auto& fulfiller, int64_t queue_idx, bool alternate_device) {
+std::optional<sycl::event> execute_plan_impl(executor& exec, const copy_plan& plan, StagingFulfiller auto& fulfiller, int64_t queue_idx, bool alternate_device) {
 	executor::target last_target = executor::null_target;
+	std::optional<sycl::event> last_event;
 	for(auto spec : plan) {
 		fulfiller.fulfill(spec);
-		last_target = execute_copy(exec, spec, queue_idx, alternate_device, last_target);
+		auto copy_data = execute_copy(exec, spec, queue_idx, alternate_device, last_target);
+		last_target = std::get<0>(copy_data);
+		if(std::get<1>(copy_data).has_value()){
+			last_event = std::get<1>(copy_data);
+		};
 	}
+
+	return last_event;
 }
 
-void execute_copy(executor& exec, const copy_plan& plan) {
+std::optional<sycl::event> execute_copy(executor& exec, const copy_plan& plan) {
 	staging_fulfiller fulfiller(exec);
-	execute_plan_impl(exec, plan, fulfiller, 0, false);
+	return execute_plan_impl(exec, plan, fulfiller, 0, false);
 }
 
-void execute_copy(executor& exec, const parallel_copy_set& set) {
+std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set& set) {
 	// TODO: smarter staging reuse
 	// TODO make this better and more testable:
 	//      - have a seperate type for executable copy sets, which are already staged and split into appropriate parts
@@ -475,7 +488,7 @@ void execute_copy(executor& exec, const parallel_copy_set& set) {
 
 	staging_fulfiller fulfiller(exec);
 	std::vector<parallel_copy_set> fulfilled_sets(parts_count);
-	std::vector<std::future<void>> futures;
+	std::vector<std::future<std::optional<sycl::event>>> futures;
 	int64_t current_set_idx = 0;
 	int64_t sets_added_to_current = 0;
 	std::atomic<int64_t> plans_executed = 0;
@@ -493,21 +506,28 @@ void execute_copy(executor& exec, const parallel_copy_set& set) {
 			futures.push_back(pool.submit_task([&, current_set_idx]() {
 				noop_fulfiller ful;
 				int64_t plan_idx = 0;
+				std::optional<sycl::event> event;
 				for(auto& plan : fulfilled_sets[current_set_idx]) {
 					bool use_alternate_device = plan.size() == 1 && plan_idx % 2 == 1;
-					execute_plan_impl(exec, plan, ful, current_set_idx, use_alternate_device);
+					event = execute_plan_impl(exec, plan, ful, current_set_idx, use_alternate_device);
 					plan_idx++;
 					plans_executed++;
 				}
+				return event;
 			}));
 			current_set_idx++;
 			sets_added_to_current = 0;
 		}
 	}
+	std::optional<sycl::event> event;
 	for(auto& f : futures) {
 		f.wait();
+		if(f.get().has_value()){
+			event = f.get().value();
+		}
 	}
 	COPYLIB_ENSURE(plans_executed == total_plans, "Not all plans executed ({} of {})", plans_executed.load(), total_plans);
+	return event;
 }
 
 } // namespace copylib
