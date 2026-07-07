@@ -530,8 +530,9 @@ std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set&
 	for(auto& f : futures) {
 		f.wait();
 		std::cout << "DEBUG: waited for future\n"; 
-		if(f.get().has_value()){
-			event = f.get().value();
+		auto f_result = f.get();
+		if(f_result.has_value()){
+			event = f_result.value();
 		}
 	}
 	COPYLIB_ENSURE(plans_executed == total_plans, "Not all plans executed ({} of {})", plans_executed.load(), total_plans);
