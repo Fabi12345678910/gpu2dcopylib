@@ -1,6 +1,7 @@
 #include "copylib_backend.hpp"
 
 #include "copylib_support.hpp" // IWYU pragma: keep - this is needed for formatting output, IWYU is dumb
+#include <cstdio>
 #include <optional>
 #include <sycl/sycl.hpp>
 #include <tuple>
@@ -516,6 +517,9 @@ std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set&
 					plan_idx++;
 					plans_executed++;
 				}
+
+				std::cout << "DEBUG: return event has value: " << event.has_value() << "\n";
+
 				return event;
 			}));
 			current_set_idx++;
@@ -525,6 +529,7 @@ std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set&
 	std::optional<sycl::event> event = std::nullopt;
 	for(auto& f : futures) {
 		f.wait();
+		std::cout << "DEBUG: waited for future\n"; 
 		if(f.get().has_value()){
 			event = f.get().value();
 		}
