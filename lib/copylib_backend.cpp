@@ -506,7 +506,7 @@ std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set&
 			futures.push_back(pool.submit_task([&, current_set_idx]() {
 				noop_fulfiller ful;
 				int64_t plan_idx = 0;
-				std::optional<sycl::event> event;
+				std::optional<sycl::event> event = std::nullopt;
 				for(auto& plan : fulfilled_sets[current_set_idx]) {
 					bool use_alternate_device = plan.size() == 1 && plan_idx % 2 == 1;
 					event = execute_plan_impl(exec, plan, ful, current_set_idx, use_alternate_device);
