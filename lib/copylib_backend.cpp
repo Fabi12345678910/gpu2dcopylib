@@ -458,7 +458,7 @@ concept StagingFulfiller = requires(T f, copy_spec c) {
 
 std::optional<sycl::event> execute_plan_impl(executor& exec, const copy_plan& plan, StagingFulfiller auto& fulfiller, int64_t queue_idx, bool alternate_device) {
 	executor::target last_target = executor::null_target;
-	std::optional<sycl::event> last_event;
+	std::optional<sycl::event> last_event = std::nullopt;
 	for(auto spec : plan) {
 		fulfiller.fulfill(spec);
 		auto copy_data = execute_copy(exec, spec, queue_idx, alternate_device, last_target);
@@ -509,7 +509,10 @@ std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set&
 				std::optional<sycl::event> event = std::nullopt;
 				for(auto& plan : fulfilled_sets[current_set_idx]) {
 					bool use_alternate_device = plan.size() == 1 && plan_idx % 2 == 1;
-					event = execute_plan_impl(exec, plan, ful, current_set_idx, use_alternate_device);
+					auto new_event = execute_plan_impl(exec, plan, ful, current_set_idx, use_alternate_device);
+					if(new_event.has_value()){
+						event = new_event;
+					}
 					plan_idx++;
 					plans_executed++;
 				}
@@ -519,7 +522,7 @@ std::optional<sycl::event> execute_copy(executor& exec, const parallel_copy_set&
 			sets_added_to_current = 0;
 		}
 	}
-	std::optional<sycl::event> event;
+	std::optional<sycl::event> event = std::nullopt;
 	for(auto& f : futures) {
 		f.wait();
 		if(f.get().has_value()){
