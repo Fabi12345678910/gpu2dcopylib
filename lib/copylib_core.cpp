@@ -13,7 +13,7 @@ bool is_valid(const data_layout& layout) { //
 	return layout.fragment_length > 0 && layout.fragment_count > 0
 	       && (layout.stride >= layout.fragment_length ||
 	           // simple contiguous layout (allowed for 1D copies)
-	           (layout.stride == 0 && layout.fragment_count == 1));
+	           (layout.fragment_count == 1));
 }
 
 bool is_valid(const copy_spec& plan) {
