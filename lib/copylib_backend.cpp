@@ -291,7 +291,7 @@ std::byte* executor::get_host_staging_buffer(device_id id) {
 	return devices[static_cast<int>(id)].host_staging_buffer;
 }
 
-void copy_with_kernel(sycl::queue& q, const copy_spec& spec, int32_t preferred_wg_size);
+void copy_with_kernel(sycl::queue& q, const copy_spec& spec, int32_t preferred_wg_size, sycl::event& event);
 
 template <typename CopyFun>
 void copy_via_repeated_1D_copies(CopyFun fun, const data_layout& source_layout, const data_layout& target_layout) {
